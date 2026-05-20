@@ -1,11 +1,11 @@
 """
 Epic Games 折扣 & 免费游戏查看器 - 增强版 v2
 新功能：人民币价格显示
-使用方法: python epic_deals_v2.py
+使用方法: python app.py
 访问: http://localhost:5000
 """
 
-import cloudscraper
+import requests as req
 from flask import Flask, jsonify, request
 from datetime import datetime
 import json, os, re
@@ -15,9 +15,17 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 NOTIFY_FILE = os.path.join(BASE_DIR, "notified_games.json")
 
-scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "desktop": True})
-EPIC_API = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
+EPIC_APIS = [
+    "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions",
+    "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions",
+]
 USD_TO_CNY = 7.25
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+}
 
 def load_json(path, default=None):
     if os.path.exists(path):
@@ -33,14 +41,13 @@ def save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def usd_to_cny(usd_str):
-    """美元转人民币"""
     if not usd_str:
         return ""
     try:
         num = float(re.sub(r'[^0-9.]', '', usd_str))
         if num == 0:
             return ""
-        return f"约¥{num * USD_TO_CNY:.0f}"
+        return f"\u7ea6\u00a5{num * USD_TO_CNY:.0f}"
     except:
         return ""
 
@@ -63,10 +70,27 @@ def get_url(game):
     slug = game.get("productSlug") or game.get("urlSlug") or ""
     return f"https://store.epicgames.com/zh-CN/p/{slug}" if slug else f"https://store.epicgames.com/zh-CN/p/{game.get('id', '')}"
 
+def fetch_epic_api(locale, country):
+    """尝试多个 API 端点"""
+    last_err = None
+    for api_url in EPIC_APIS:
+        try:
+            r = req.get(api_url, params={
+                "locale": locale, "country": country, "allowCountries": country
+            }, headers=HEADERS, timeout=20)
+            if r.status_code == 200:
+                data = r.json()
+                elements = data.get("data", {}).get("Catalog", {}).get("searchStore", {}).get("elements", [])
+                if elements:
+                    return data
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = str(e)
+    raise Exception(f"所有API端点均失败: {last_err}")
+
 def fetch_data(locale="zh-CN", country="CN"):
     try:
-        r = scraper.get(EPIC_API, params={"locale": locale, "country": country, "allowCountries": country}, timeout=15)
-        data = r.json()
+        data = fetch_epic_api(locale, country)
     except Exception as e:
         return {"error": str(e), "free": [], "discounts": []}
     
@@ -86,7 +110,7 @@ def fetch_data(locale="zh-CN", country="CN"):
         
         info = {
             "id": g.get("id", ""),
-            "title": g.get("title", "未知游戏"),
+            "title": g.get("title", "\u672a\u77e5\u6e38\u620f"),
             "description": g.get("description", "").strip()[:150],
             "image": get_image(g),
             "url": get_url(g),
@@ -123,7 +147,7 @@ def index():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Epic Games 优惠查看器</title>
+<title>Epic Games \u4f18\u60e0\u67e5\u770b\u5668</title>
 <style>
 :root{--bg:#0a0a0f;--bg2:#12121a;--card:#1a1a2e;--t1:#e8e8f0;--t2:#8888a8;--blue:#0078f2;--green:#00d26a;--orange:#ff6b35;--border:#2a2a40;--r:12px}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -158,33 +182,64 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans
 .price-new{color:var(--green);font-weight:700}
 .price-cny{font-size:.75rem;color:var(--t2);margin-left:.3rem}
 .loading{grid-column:1/-1;text-align:center;padding:3rem;color:var(--t2)}
+.empty{grid-column:1/-1;text-align:center;padding:3rem;color:var(--t2)}
+.empty .icon{font-size:2.5rem;margin-bottom:.8rem}
 @media(max-width:768px){.free-grid,.discount-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header class="header"><div class="header-inner">
-<div class="logo"><span>🎮</span><h1>Epic Games 优惠查看器</h1></div>
-<div><button class="btn" onclick="loadData()">🔄 刷新</button></div>
+<div class="logo"><span>\U0001f3ae</span><h1>Epic Games \u4f18\u60e0\u67e5\u770b\u5668</h1></div>
+<div><button class="btn" onclick="loadData()">\U0001f504 \u5237\u65b0</button></div>
 </div></header>
 <nav class="tabs">
-<button class="tab active" onclick="switchTab('free')">🎁 免费游戏</button>
-<button class="tab" onclick="switchTab('disc')">💰 折扣游戏</button>
+<button class="tab active" onclick="switchTab('free',this)">\U0001f381 \u514d\u8d39\u6e38\u620f</button>
+<button class="tab" onclick="switchTab('disc',this)">\U0001f4b0 \u6298\u6263\u6e38\u620f</button>
 </nav>
 <main class="main">
 <div id="tab-free" class="tab-content active">
-<div class="sh"><h2>🎁 当前免费游戏</h2></div>
-<div id="free-list" class="grid free-grid"><div class="loading">加载中...</div></div>
+<div class="sh"><h2>\U0001f381 \u5f53\u524d\u514d\u8d39\u6e38\u620f</h2></div>
+<div id="free-list" class="grid free-grid"><div class="loading">\u52a0\u8f7d\u4e2d...</div></div>
 </div>
 <div id="tab-disc" class="tab-content">
-<div class="sh"><h2>💰 折扣游戏</h2></div>
-<div id="disc-list" class="grid discount-grid"><div class="loading">加载中...</div></div>
+<div class="sh"><h2>\U0001f4b0 \u6298\u6263\u6e38\u620f</h2></div>
+<div id="disc-list" class="grid discount-grid"><div class="loading">\u52a0\u8f7d\u4e2d...</div></div>
 </div>
 </main>
 <script>
 function $(id){return document.getElementById(id)}
-function switchTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');$('tab-'+name).classList.add('active')}
-function card(g,type){var c=document.createElement('a');c.className='gc';c.href=g.url;c.target='_blank';c.style='text-decoration:none;color:inherit';var tag=type=='free'?'<span class="tag tag-free">免费</span>':'<span class="tag tag-disc">-'+g.discount+'%</span>';var price=type=='free'?'<span class="price-new">免费</span>':'<span class="price-new">'+g.discountPrice+'</span><span class="price-cny">'+g.discountPriceCNY+'</span>';c.innerHTML='<img src="'+g.image+'" onerror="this.style.display=\'none\'"><div class="gc-body"><div class="gc-title">'+g.title+'</div><div class="gc-desc">'+g.description+'</div><div class="gc-foot">'+tag+'<div>'+price+'</div></div></div>';return c}
-function loadData(){fetch('/api/games').then(r=>r.json()).then(d=>{var fl=$('free-list'),dl=$('disc-list');fl.innerHTML='';dl.innerHTML='';d.free.forEach(g=>fl.appendChild(card(g,'free')));d.discounts.forEach(g=>dl.appendChild(card(g,'disc')))})}
+function switchTab(name,el){
+document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});
+document.querySelectorAll('.tab-content').forEach(function(t){t.classList.remove('active')});
+el.classList.add('active');
+$('tab-'+name).classList.add('active');
+}
+function card(g,type){
+var c=document.createElement('a');c.className='gc';c.href=g.url;c.target='_blank';c.style.cssText='text-decoration:none;color:inherit';
+var tag=type==='free'?'<span class="tag tag-free">\u514d\u8d39</span>':'<span class="tag tag-disc">-'+g.discount+'%</span>';
+var price=type==='free'?'<span class="price-new">\u514d\u8d39</span>':'<span class="price-new">'+g.discountPrice+'</span><span class="price-cny">'+g.discountPriceCNY+'</span>';
+c.innerHTML='<img src="'+g.image+'" onerror="this.style.display=\\'none\\'"><div class="gc-body"><div class="gc-title">'+g.title+'</div><div class="gc-desc">'+g.description+'</div><div class="gc-foot">'+tag+'<div>'+price+'</div></div></div>';
+return c;
+}
+function loadData(){
+var fl=$('free-list'),dl=$('disc-list');
+fl.innerHTML='<div class="loading">\u52a0\u8f7d\u4e2d...</div>';
+dl.innerHTML='<div class="loading">\u52a0\u8f7d\u4e2d...</div>';
+fetch('/api/games').then(function(r){return r.json()}).then(function(d){
+fl.innerHTML='';dl.innerHTML='';
+if(d.error){
+fl.innerHTML='<div class="empty"><div class="icon">\u26a0\ufe0f</div><p>\u52a0\u8f7d\u5931\u8d25: '+d.error+'</p><p style="margin-top:.5rem;font-size:.8rem">\u8bf7\u7a0d\u540e\u70b9\u51fb\u5237\u65b0\u91cd\u8bd5</p></div>';
+return;
+}
+if(d.free.length===0){fl.innerHTML='<div class="empty"><div class="icon">\U0001f4ed</div><p>\u6682\u65e0\u514d\u8d39\u6e38\u620f</p></div>';}
+else{d.free.forEach(function(g){fl.appendChild(card(g,'free'))});}
+if(d.discounts.length===0){dl.innerHTML='<div class="empty"><div class="icon">\U0001f50d</div><p>\u6682\u65e0\u6298\u6263\u6e38\u620f</p></div>';}
+else{d.discounts.forEach(function(g){dl.appendChild(card(g,'disc'))});}
+}).catch(function(err){
+fl.innerHTML='<div class="empty"><div class="icon">\u274c</div><p>\u7f51\u7edc\u9519\u8bef</p></div>';
+dl.innerHTML='<div class="empty"><div class="icon">\u274c</div><p>\u7f51\u7edc\u9519\u8bef</p></div>';
+});
+}
 loadData();
 </script>
 </body></html>"""
@@ -207,10 +262,5 @@ def api_notify():
     return jsonify({"error": "unknown"})
 
 if __name__ == "__main__":
-    print("=" * 45)
-    print("  🎮 Epic Games 优惠查看器 v2")
-    print("  💰 新增：人民币价格显示")
-    print("  📡 http://localhost:5000")
-    print("=" * 45)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
