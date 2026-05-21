@@ -1,243 +1,20 @@
 """
-Epic Games & Steam 优惠查看器 - 增强版
-功能：Epic/Steam 免费游戏 + 折扣 + 人民币价格
+Epic & Steam 优惠查看器 - 纯前端版
+浏览器直接请求API，服务器只提供网页
 使用方法: python app.py
-访问: http://localhost:5000
 """
 
-import requests as req
-from flask import Flask, jsonify, request
-from datetime import datetime
-import json, os, re
+from flask import Flask
+import os
 
 app = Flask(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-NOTIFY_FILE = os.path.join(BASE_DIR, "notified_games.json")
-
-# Epic API
-EPIC_APIS = [
-    "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions",
-    "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions",
-]
-# Steam API
-STEAM_API = "https://store.steampowered.com/api/featuredcategories"
-
-USD_TO_CNY = 7.25
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "application/json",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-}
-
-# ═══════════════════════════════════════════
-#  工具函数
-# ═══════════════════════════════════════════
-
-def load_json(path, default=None):
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return default if default is not None else {}
-
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def cents_to_cny(cents, currency="USD"):
-    """美分/整数价格转人民币"""
-    try:
-        if currency == "CNY":
-            num = float(cents) / 100
-        else:
-            num = float(cents) / 100 * USD_TO_CNY
-        if num == 0:
-            return ""
-        return f"\u7ea6\u00a5{num:.0f}"
-    except:
-        return ""
-
-def cents_to_usd(cents):
-    """美分转美元"""
-    try:
-        num = float(cents) / 100
-        if num == 0:
-            return ""
-        return f"${num:.2f}"
-    except:
-        return ""
-
-# ═══════════════════════════════════════════
-#  Epic 数据获取
-# ═══════════════════════════════════════════
-
-def fetch_epic_api(locale, country):
-    last_err = None
-    for api_url in EPIC_APIS:
-        try:
-            r = req.get(api_url, params={
-                "locale": locale, "country": country, "allowCountries": country
-            }, headers=HEADERS, timeout=20)
-            if r.status_code == 200:
-                data = r.json()
-                elements = data.get("data", {}).get("Catalog", {}).get("searchStore", {}).get("elements", [])
-                if elements:
-                    return data
-            last_err = f"HTTP {r.status_code}"
-        except Exception as e:
-            last_err = str(e)
-    raise Exception(f"Epic API\u5747\u5931\u8d25: {last_err}")
-
-def get_epic_image(game):
-    for t in ["DieselStoreFrontWide", "OfferImageWide", "Thumbnail"]:
-        for img in game.get("keyImages", []):
-            if img.get("type") == t:
-                return img["url"]
-    return ""
-
-def get_epic_url(game):
-    slug = game.get("productSlug") or game.get("urlSlug") or ""
-    return f"https://store.epicgames.com/zh-CN/p/{slug}" if slug else f"https://store.epicgames.com/zh-CN/p/{game.get('id', '')}"
-
-def fmt_date(s):
-    if not s:
-        return ""
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
-    except:
-        return s[:16]
-
-def fetch_epic():
-    try:
-        data = fetch_epic_api("zh-CN", "CN")
-    except Exception as e:
-        return {"error": str(e), "free": [], "discounts": []}
-    
-    elements = data.get("data", {}).get("Catalog", {}).get("searchStore", {}).get("elements", [])
-    free_games, discounts = [], []
-    
-    for g in elements:
-        promo = g.get("promotions") or {}
-        offers = promo.get("promotionalOffers", [])
-        if not offers:
-            continue
-        
-        price_data = g.get("price", {}).get("totalPrice", {})
-        fmt = price_data.get("fmtPrice", {})
-        orig = fmt.get("originalPrice", "")
-        disc = fmt.get("discountPrice", "")
-        
-        info = {
-            "id": g.get("id", ""),
-            "title": g.get("title", "\u672a\u77e5\u6e38\u620f"),
-            "description": g.get("description", "").strip()[:150],
-            "image": get_epic_image(g),
-            "url": get_epic_url(g),
-            "originalPrice": orig,
-            "discountPrice": disc,
-            "originalPriceCNY": cents_to_cny(float(re.sub(r'[^0-9.]', '', orig)) * 100) if orig else "",
-            "discountPriceCNY": cents_to_cny(float(re.sub(r'[^0-9.]', '', disc)) * 100) if disc else "",
-            "seller": g.get("seller", {}).get("name", "")
-        }
-        
-        for offer_set in offers:
-            offer_list = offer_set.get("promotionalOffers", [])
-            if offer_list:
-                o = offer_list[0]
-                discount_pct = o.get("discountSetting", {}).get("discountPercentage", -1)
-                info["startDate"] = fmt_date(o.get("startDate", ""))
-                info["endDate"] = fmt_date(o.get("endDate", ""))
-                info["discount"] = 100 - discount_pct if discount_pct >= 0 else 0
-                
-                if discount_pct == 0:
-                    free_games.append(info)
-                elif discount_pct > 0:
-                    discounts.append(info)
-                break
-    
-    discounts.sort(key=lambda x: x.get("discount", 0), reverse=True)
-    return {"free": free_games, "discounts": discounts}
-
-# ═══════════════════════════════════════════
-#  Steam 数据获取
-# ═══════════════════════════════════════════
-
-def fetch_steam():
-    try:
-        r = req.get(STEAM_API, params={"cc": "cn", "l": "schinese"}, headers=HEADERS, timeout=20)
-        if r.status_code != 200:
-            return {"error": f"HTTP {r.status_code}", "free": [], "discounts": []}
-        data = r.json()
-    except Exception as e:
-        return {"error": str(e), "free": [], "discounts": []}
-    
-    free_games, discounts = [], []
-    seen_ids = set()
-    
-    # 遍历所有分类
-    for cat_name, cat_data in data.items():
-        if not isinstance(cat_data, dict) or "items" not in cat_data:
-            continue
-        for game in cat_data["items"]:
-            game_id = game.get("id")
-            if game_id in seen_ids:
-                continue
-            seen_ids.add(game_id)
-            
-            final_price = game.get("final_price", 0)
-            is_free = game.get("is_free", False)
-            discounted = game.get("discounted", False)
-            discount_pct = game.get("discount_percent", 0)
-            orig_price = game.get("original_price", 0)
-            currency = game.get("currency", "CNY")
-            
-            # 免费游戏
-            if final_price == 0 or is_free:
-                free_games.append({
-                    "id": str(game_id),
-                    "title": game.get("name", "\u672a\u77e5\u6e38\u620f"),
-                    "description": "",
-                    "image": game.get("header_image") or game.get("small_capsule_image") or "",
-                    "url": f"https://store.steampowered.com/app/{game_id}",
-                    "originalPrice": cents_to_usd(orig_price) if orig_price else "",
-                    "discountPrice": "\u514d\u8d39",
-                    "originalPriceCNY": cents_to_cny(orig_price, currency) if orig_price else "",
-                    "discountPriceCNY": "",
-                    "seller": ""
-                })
-            # 折扣游戏
-            elif discounted and discount_pct > 0:
-                discounts.append({
-                    "id": str(game_id),
-                    "title": game.get("name", "\u672a\u77e5\u6e38\u620f"),
-                    "description": "",
-                    "image": game.get("header_image") or game.get("small_capsule_image") or "",
-                    "url": f"https://store.steampowered.com/app/{game_id}",
-                    "originalPrice": cents_to_usd(orig_price) if orig_price else "",
-                    "discountPrice": cents_to_usd(final_price),
-                    "originalPriceCNY": cents_to_cny(orig_price, currency) if orig_price else "",
-                    "discountPriceCNY": cents_to_cny(final_price, currency),
-                    "discount": discount_pct,
-                    "seller": ""
-                })
-    
-    discounts.sort(key=lambda x: x.get("discount", 0), reverse=True)
-    return {"free": free_games, "discounts": discounts}
-
-# ═══════════════════════════════════════════
-#  前端页面
-# ═══════════════════════════════════════════
-
-HTML = """<!DOCTYPE html>
+HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Epic & Steam \u4f18\u60e0\u67e5\u770b</title>
+<title>Epic & Steam 优惠查看</title>
 <style>
 :root{--bg:#0a0a0f;--bg2:#12121a;--card:#1a1a2e;--t1:#e8e8f0;--t2:#8888a8;--blue:#0078f2;--green:#00d26a;--orange:#ff6b35;--purple:#7c3aed;--border:#2a2a40;--r:12px}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -247,28 +24,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans
 .logo{display:flex;align-items:center;gap:.6rem}
 .logo-icon{font-size:1.8rem}
 .logo h1{font-size:1.2rem;font-weight:700;background:linear-gradient(135deg,var(--blue),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.header-actions{display:flex;gap:.5rem}
 .btn{padding:.45rem .8rem;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--t1);cursor:pointer;font-size:.85rem}
 .btn:hover{border-color:var(--blue)}
 .tabs{max-width:1400px;margin:1rem auto 0;padding:0 1rem;display:flex;gap:.3rem;flex-wrap:wrap}
 .tab{padding:.55rem 1rem;border:1px solid var(--border);border-radius:8px 8px 0 0;background:transparent;color:var(--t2);cursor:pointer;font-size:.85rem;border-bottom:none}
-.tab.epic{--tab-color:var(--blue)}
-.tab.steam{--tab-color:var(--purple)}
-.tab.active{color:var(--t1);background:var(--bg2);border-color:var(--tab-color,var(--blue))}
-.tab-name{font-weight:600}
-.tab-badge{padding:.1rem .4rem;border-radius:8px;font-size:.7rem;margin-left:.3rem}
-.tab.epic .tab-badge{background:rgba(0,120,242,.2);color:var(--blue)}
-.tab.steam .tab-badge{background:rgba(124,58,237,.2);color:var(--purple)}
+.tab.epic{--c:var(--blue)}.tab.steam{--c:var(--purple)}
+.tab.active{color:var(--t1);background:var(--bg2);border-color:var(--c)}
+.tab b{font-weight:600}.tab span{padding:.1rem .4rem;border-radius:8px;font-size:.7rem;margin-left:.3rem}
+.tab.epic span{background:rgba(0,120,242,.2);color:var(--blue)}
+.tab.steam span{background:rgba(124,58,237,.2);color:var(--purple)}
 .main{max-width:1400px;margin:0 auto;padding:0 1rem 1.5rem}
-.tab-content{display:none;background:var(--bg2);border:1px solid var(--border);border-radius:0 var(--r) var(--r) var(--r);padding:1.5rem}
-.tab-content.active{display:block}
-.sh{margin-bottom:1.2rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem}
+.tc{display:none;background:var(--bg2);border:1px solid var(--border);border-radius:0 var(--r) var(--r) var(--r);padding:1.5rem}
+.tc.active{display:block}
+.sh{margin-bottom:1.2rem}
 .sh h2{font-size:1.3rem}
-.sh h2 .brand{font-size:.9rem;padding:.2rem .6rem;border-radius:12px;margin-right:.5rem}
-.sh h2 .brand.epic{background:rgba(0,120,242,.2);color:var(--blue)}
-.sh h2 .brand.steam{background:rgba(124,58,237,.2);color:var(--purple)}
-.grid{display:grid;gap:1rem}
-.grid-3{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.sh h2 em{font-style:normal;font-size:.85rem;padding:.2rem .6rem;border-radius:12px;margin-right:.5rem}
+.sh h2 em.epic{background:rgba(0,120,242,.2);color:var(--blue)}
+.sh h2 em.steam{background:rgba(124,58,237,.2);color:var(--purple)}
+.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
 .gc{background:var(--card);border-radius:var(--r);overflow:hidden;border:1px solid var(--border);transition:.3s}
 .gc:hover{transform:translateY(-3px);border-color:var(--blue);box-shadow:0 4px 20px rgba(0,0,0,.4)}
 .gc img{width:100%;aspect-ratio:16/7;object-fit:cover;background:var(--bg);display:block}
@@ -279,122 +52,105 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans
 .tag{padding:.2rem .6rem;border-radius:16px;font-size:.75rem;font-weight:700;color:#fff}
 .tag-free{background:linear-gradient(135deg,var(--green),#00b85e)}
 .tag-disc{background:linear-gradient(135deg,var(--blue),#0055cc)}
-.price-wrap{display:flex;flex-direction:column;align-items:flex-end}
-.price-orig{font-size:.7rem;color:var(--t2);text-decoration:line-through}
-.price-new{color:var(--green);font-weight:700;font-size:.9rem}
-.price-cny{font-size:.65rem;color:var(--t2)}
-.loading{grid-column:1/-1;text-align:center;padding:3rem;color:var(--t2)}
+.pw{display:flex;flex-direction:column;align-items:flex-end}
+.po{font-size:.7rem;color:var(--t2);text-decoration:line-through}
+.pn{color:var(--green);font-weight:700;font-size:.9rem}
+.pc{font-size:.65rem;color:var(--t2)}
+.ld{grid-column:1/-1;text-align:center;padding:3rem;color:var(--t2)}
+.spinner{display:inline-block;width:30px;height:30px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
 .empty{grid-column:1/-1;text-align:center;padding:3rem;color:var(--t2)}
 .empty .icon{font-size:2.5rem;margin-bottom:.8rem}
-@media(max-width:768px){.grid-3{grid-template-columns:1fr}}
+.err-msg{font-size:.8rem;margin-top:.5rem;word-break:break-all}
+@media(max-width:768px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header class="header"><div class="header-inner">
-<div class="logo"><span class="logo-icon">\U0001f3ae</span><h1>Epic & Steam \u4f18\u60e0\u67e5\u770b</h1></div>
-<div class="header-actions">
-<button class="btn" onclick="loadAll()">\U0001f504 \u5237\u65b0</button>
-</div>
+<div class="logo"><span class="logo-icon">🎮</span><h1>Epic & Steam 优惠查看</h1></div>
+<div><button class="btn" onclick="loadAll()">🔄 刷新</button></div>
 </div></header>
 <nav class="tabs">
-<button class="tab epic active" onclick="switchTab('epic-free',this)"><span class="tab-name">\U0001f381 Epic</span><span class="tab-badge">\u514d\u8d39</span></button>
-<button class="tab epic" onclick="switchTab('epic-deal',this)"><span class="tab-name">\U0001f4b0 Epic</span><span class="tab-badge">\u6298\u6263</span></button>
-<button class="tab steam" onclick="switchTab('steam-free',this)"><span class="tab-name">\U0001f3ae Steam</span><span class="tab-badge">\u514d\u8d39</span></button>
-<button class="tab steam" onclick="switchTab('steam-deal',this)"><span class="tab-name">\U0001f4b0 Steam</span><span class="tab-badge">\u6298\u6263</span></button>
+<button class="tab epic active" onclick="sw('ef',this)"><b>🎁 Epic</b><span>免费</span></button>
+<button class="tab epic" onclick="sw('ed',this)"><b>💰 Epic</b><span>折扣</span></button>
+<button class="tab steam" onclick="sw('sf',this)"><b>🎮 Steam</b><span>免费</span></button>
+<button class="tab steam" onclick="sw('sd',this)"><b>💰 Steam</b><span>折扣</span></button>
 </nav>
 <main class="main">
-<div id="tab-epic-free" class="tab-content active">
-<div class="sh"><h2><span class="brand epic">Epic</span>\U0001f381 \u5f53\u524d\u514d\u8d39\u6e38\u620f</h2></div>
-<div id="epic-free-list" class="grid grid-3"><div class="loading">\u52a0\u8f7d\u4e2d...</div></div>
-</div>
-<div id="tab-epic-deal" class="tab-content">
-<div class="sh"><h2><span class="brand epic">Epic</span>\U0001f4b0 \u6298\u6263\u6e38\u620f</h2></div>
-<div id="epic-deal-list" class="grid grid-3"><div class="loading">\u52a0\u8f7d\u4e2d...</div></div>
-</div>
-<div id="tab-steam-free" class="tab-content">
-<div class="sh"><h2><span class="brand steam">Steam</span>\U0001f381 \u5f53\u524d\u514d\u8d39\u6e38\u620f</h2></div>
-<div id="steam-free-list" class="grid grid-3"><div class="loading">\u52a0\u8f7d\u4e2d...</div></div>
-</div>
-<div id="tab-steam-deal" class="tab-content">
-<div class="sh"><h2><span class="brand steam">Steam</span>\U0001f4b0 \u6298\u6263\u6e38\u620f</h2></div>
-<div id="steam-deal-list" class="grid grid-3"><div class="loading">\u52a0\u8f7d\u4e2d...</div></div>
-</div>
+<div id="t-ef" class="tc active"><div class="sh"><h2><em class="epic">Epic</em>🎁 当前免费游戏</h2></div><div id="ef" class="grid"><div class="ld"><div class="spinner"></div><br>加载中...</div></div></div>
+<div id="t-ed" class="tc"><div class="sh"><h2><em class="epic">Epic</em>💰 折扣游戏</h2></div><div id="ed" class="grid"><div class="ld"><div class="spinner"></div><br>加载中...</div></div></div>
+<div id="t-sf" class="tc"><div class="sh"><h2><em class="steam">Steam</em>🎮 当前免费游戏</h2></div><div id="sf" class="grid"><div class="ld"><div class="spinner"></div><br>加载中...</div></div></div>
+<div id="t-sd" class="tc"><div class="sh"><h2><em class="steam">Steam</em>💰 折扣游戏</h2></div><div id="sd" class="grid"><div class="ld"><div class="spinner"></div><br>加载中...</div></div></div>
 </main>
 <script>
-var data={epic:{free:[],deals:[]},steam:{free:[],deals:[]},loaded:{epic:false,steam:false}};
-function $(id){return document.getElementById(id)}
-function switchTab(name,el){
-document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});
-document.querySelectorAll('.tab-content').forEach(function(t){t.classList.remove('active')});
-el.classList.add('active');
-$('tab-'+name).classList.add('active');
-}
-function makeCard(g,type){
-var c=document.createElement('a');c.className='gc';c.href=g.url;c.target='_blank';c.style.cssText='text-decoration:none;color:inherit';
-var tag=type==='free'?'<span class="tag tag-free">\u514d\u8d39</span>':'<span class="tag tag-disc">-'+g.discount+'%</span>';
-var price=type==='free'?
-'<div class="price-wrap"><span class="price-new">\u514d\u8d39</span></div>':
-'<div class="price-wrap"><span class="price-orig">'+g.originalPrice+'</span><span class="price-new">'+g.discountPrice+'</span><span class="price-cny">'+g.discountPriceCNY+'</span></div>';
-c.innerHTML='<img src="'+g.image+'" onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 140%22><rect fill=%22%231a1a2e%22 width=%22320%22 height=%22140%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%238888a8%22 text-anchor=%22middle%22 dy=%22.3em%22 font-size=%2214%22>\u6e38\u620f\u56fe</text></svg>\'">'+'<div class="gc-body"><div class="gc-title">'+g.title+'</div><div class="gc-desc">'+g.description+'</div><div class="gc-foot">'+tag+price+'</div></div>';
-return c;
-}
-function showList(el,list,type){
-if(list.length===0){
-el.innerHTML='<div class="empty"><div class="icon">\U0001f50d</div><p>\u6682\u65e0\u6570\u636e</p></div>';
-return;
-}
-el.innerHTML='';
-list.forEach(function(g){el.appendChild(makeCard(g,type));});
-}
+var R=7.25;
+function $(i){return document.getElementById(i)}
+function sw(n,el){document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});document.querySelectorAll('.tc').forEach(function(t){t.classList.remove('active')});el.classList.add('active');$('t-'+n).classList.add('active')}
+function c2c(c,cur){if(!c)return'';var n=cur==='CNY'?c/100:c/100*R;return n===0?'':'约¥'+Math.round(n)}
+function c2u(c){if(!c)return'';var n=c/100;return n===0?'':'$'+n.toFixed(2)}
+function fd(s){if(!s)return'';try{return new Date(s).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return s.substring(0,16)}}
+function card(g,t){var c=document.createElement('a');c.className='gc';c.href=g.url;c.target='_blank';c.style.cssText='text-decoration:none;color:inherit';var tg=t==='free'?'<span class="tag tag-free">免费</span>':'<span class="tag tag-disc">-'+g.discount+'%</span>';var pr=t==='free'?'<div class="pw"><span class="pn">免费</span></div>':'<div class="pw">'+(g.originalPrice?'<span class="po">'+g.originalPrice+'</span>':'')+'<span class="pn">'+g.discountPrice+'</span>'+(g.discountPriceCNY?'<span class="pc">'+g.discountPriceCNY+'</span>':'')+'</div>';c.innerHTML='<img src="'+g.image+'" onerror="this.style.display=\'none\'"><div class="gc-body"><div class="gc-title">'+g.title+'</div>'+(g.description?'<div class="gc-desc">'+g.description+'</div>':'')+'<div class="gc-foot">'+tg+pr+'</div></div>';return c}
+function show(el,list,type){if(!list.length){el.innerHTML='<div class="empty"><div class="icon">🔍</div><p>暂无数据</p></div>';return}el.innerHTML='';list.forEach(function(g){el.appendChild(card(g,type))})}
+function err(el,msg){el.innerHTML='<div class="empty"><div class="icon">⚠️</div><p>加载失败</p><p class="err-msg">'+msg+'</p><p style="margin-top:.5rem;font-size:.75rem">请点击刷新重试</p></div>'}
+
 function loadEpic(){
-fetch('/api/epic').then(function(r){return r.json()}).then(function(d){
-if(d.error){$('epic-free-list').innerHTML='<div class="empty"><div class="icon">\u26a0\ufe0f</div><p>'+d.error+'</p></div>';return;}
-data.epic=d;data.loaded.epic=true;
-showList($('epic-free-list'),d.free,'free');
-showList($('epic-deal-list'),d.discounts,'deal');
-}).catch(function(){$('epic-free-list').innerHTML='<div class="empty"><div class="icon">\u274c</div><p>\u7f51\u7edc\u9519\u8bef</p></div>';});
+['ef','ed'].forEach(function(id){$(id).innerHTML='<div class="ld"><div class="spinner"></div><br>加载中...</div>'});
+var url='https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=zh-CN&country=US&allowCountries=US';
+fetch(url).then(function(r){return r.json()}).then(function(data){
+var els=data.data.Catalog.searchStore.elements;
+var free=[],disc=[];
+els.forEach(function(g){
+var p=g.promotions||{};var offers=p.promotionalOffers||[];
+if(!offers.length)return;
+var pr=g.price||{};var tp=pr.totalPrice||{};var fp=tp.fmtPrice||{};
+var orig=fp.originalPrice||'';var disc=fp.discountPrice||'';
+var info={id:g.id,title:g.title||'未知',description:(g.description||'').trim().substring(0,150),url:'https://store.epicgames.com/zh-CN/p/'+(g.productSlug||g.urlSlug||g.id)};
+for(var t of['DieselStoreFrontWide','OfferImageWide','Thumbnail']){for(var im of(g.keyImages||[])){if(im.type===t){info.image=im.url;break}}if(info.image)break}
+if(!info.image)info.image='';
+offers.forEach(function(os){(os.promotionalOffers||[]).forEach(function(o){
+var dp=o.discountSetting||{};var pct=dp.discountPercentage;
+info.startDate=fd(o.startDate);info.endDate=fd(o.endDate);
+info.discount=pct>=0?100-pct:0;
+info.originalPrice=orig;info.discountPrice=disc;
+if(pct===0){free.push(info)}
+else if(pct>0){disc.push(info)}
+})});
+});
+disc.sort(function(a,b){return b.discount-a.discount});
+show($('ef'),free,'free');show($('ed'),disc,'deal');
+}).catch(function(e){err($('ef'),e.message);err($('ed'),e.message)});
 }
+
 function loadSteam(){
-fetch('/api/steam').then(function(r){return r.json()}).then(function(d){
-if(d.error){$('steam-free-list').innerHTML='<div class="empty"><div class="icon">\u26a0\ufe0f</div><p>'+d.error+'</p></div>';return;}
-data.steam=d;data.loaded.steam=true;
-showList($('steam-free-list'),d.free,'free');
-showList($('steam-deal-list'),d.discounts,'deal');
-}).catch(function(){$('steam-free-list').innerHTML='<div class="empty"><div class="icon">\u274c</div><p>\u7f51\u7edc\u9519\u8bef</p></div>';});
+['sf','sd'].forEach(function(id){$(id).innerHTML='<div class="ld"><div class="spinner"></div><br>加载中...</div>'});
+var url='https://store.steampowered.com/api/featuredcategories?cc=cn&l=schinese';
+fetch(url).then(function(r){return r.json()}).then(function(data){
+var free=[],disc=[],seen={};
+for(var cat in data){var items=(data[cat]||{}).items||[];
+items.forEach(function(g){if(seen[g.id])return;seen[g.id]=1;
+var fp=g.final_price||0,op=g.original_price||0,cur=g.currency||'CNY';
+var info={id:g.id,title:g.name||'未知',description:'',url:'https://store.steampowered.com/app/'+g.id,image:g.header_image||g.small_capsule_image||''};
+if(fp===0||g.is_free){
+info.originalPrice=c2u(op);info.discountPrice='免费';info.originalPriceCNY=c2c(op,cur);info.discountPriceCNY='';
+free.push(info);
+}else if(g.discounted&&g.discount_percent>0){
+info.originalPrice=c2u(op);info.discountPrice=c2u(fp);info.originalPriceCNY=c2c(op,cur);info.discountPriceCNY=c2c(fp,cur);info.discount=g.discount_percent;
+disc.push(info);
+}});
 }
-function loadAll(){loadEpic();loadSteam();}
+disc.sort(function(a,b){return b.discount-a.discount});
+show($('sf'),free,'free');show($('sd'),disc,'deal');
+}).catch(function(e){err($('sf'),e.message);err($('sd'),e.message)});
+}
+
+function loadAll(){loadEpic();loadSteam()}
 loadAll();
 </script>
 </body></html>"""
 
-# ═══════════════════════════════════════════
-#  Flask 路由
-# ═══════════════════════════════════════════
-
 @app.route("/")
 def index():
     return HTML
-
-@app.route("/api/epic")
-def api_epic():
-    return jsonify(fetch_epic())
-
-@app.route("/api/steam")
-def api_steam():
-    return jsonify(fetch_steam())
-
-@app.route("/api/notifications", methods=["POST"])
-def api_notify():
-    data = request.get_json(force=True)
-    notified = load_json(NOTIFY_FILE, {"ids": []})
-    if data.get("action") == "check":
-        epic = fetch_epic()
-        new_ids = [g["id"] for g in epic.get("free", []) if g["id"] not in notified["ids"]]
-        for gid in new_ids:
-            notified["ids"].append(gid)
-        save_json(NOTIFY_FILE, notified)
-        return jsonify({"new_count": len(new_ids)})
-    return jsonify({"error": "unknown"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
