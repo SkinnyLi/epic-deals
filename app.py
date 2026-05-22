@@ -162,6 +162,8 @@ var p=g.promotions||{};var offers=p.promotionalOffers||[];
 if(!offers.length)return;
 var pr=g.price||{};var tp=pr.totalPrice||{};var fp=tp.fmtPrice||{};
 var orig=fp.originalPrice||'';var discP=fp.discountPrice||'';
+var origNum=parseFloat(orig.replace(/[^0-9.]/g,''))||0;
+var discNum=parseFloat(discP.replace(/[^0-9.]/g,''))||0;
 var info={id:g.id,title:g.title||'未知',description:(g.description||'').trim().substring(0,150),url:'https://store.epicgames.com/zh-CN/p/'+(g.productSlug||g.urlSlug||g.id)};
 for(var t of['DieselStoreFrontWide','OfferImageWide','Thumbnail']){for(var im of(g.keyImages||[])){if(im.type===t){info.image=im.url;break}}if(info.image)break}
 if(!info.image)info.image='';
@@ -170,6 +172,8 @@ var dp=o.discountSetting||{};var pct=dp.discountPercentage;
 info.startDate=fd(o.startDate);info.endDate=fd(o.endDate);
 info.discount=pct>=0?100-pct:0;
 info.originalPrice=orig;info.discountPrice=discP;
+info.originalPriceCNY=origNum>0?'约¥'+Math.round(origNum*R):'';
+info.discountPriceCNY=discNum>0?'约¥'+Math.round(discNum*R):'';
 if(pct===0){free.push(info)}
 else if(pct>0){disc.push(info)}
 })});
