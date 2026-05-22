@@ -58,11 +58,53 @@ def api_epic():
     except Exception as e:
         return jsonify({"error": str(e)})
 
+def get_steam_details(app_id, timeout=10):
+    """获取Steam游戏详情（简介）"""
+    try:
+        url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l=schinese&cc=cn"
+        r = req.get(url, headers=HEADERS, timeout=timeout)
+        if r.status_code == 200:
+            d = r.json()
+            if str(app_id) in d and d[str(app_id)]["success"]:
+                return d[str(app_id)]["data"].get("short_description", "")[:150]
+    except:
+        pass
+    return ""
+
 @app.route("/api/steam")
 def api_steam():
     try:
         url = "https://store.steampowered.com/api/featuredcategories?cc=cn&l=schinese"
         data = proxy_fetch(url)
+        
+        # 获取所有游戏ID
+        all_items = []
+        seen = set()
+        for cat_name, cat_data in data.items():
+            if isinstance(cat_data, dict) and "items" in cat_data:
+                for item in cat_data["items"]:
+                    if item.get("id") not in seen:
+                        seen.add(item.get("id"))
+                        all_items.append(item)
+        
+        # 为前15个游戏获取简介
+        desc_cache = {}
+        for i, item in enumerate(all_items[:15]):
+            app_id = item.get("id")
+            if app_id:
+                desc = get_steam_details(app_id)
+                if desc:
+                    desc_cache[app_id] = desc
+        
+        # 给每个游戏添加简介
+        for cat_name, cat_data in data.items():
+            if isinstance(cat_data, dict) and "items" in cat_data:
+                for item in cat_data["items"]:
+                    if item.get("id") in desc_cache:
+                        item["short_description"] = desc_cache[item.get("id")]
+                    else:
+                        item["short_description"] = ""
+        
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)})
@@ -191,7 +233,7 @@ var free=[],disc=[],seen={};
 for(var cat in data){var items=(data[cat]||{}).items||[];
 items.forEach(function(g){if(seen[g.id])return;seen[g.id]=1;
 var fp=g.final_price||0,op=g.original_price||0,cur=g.currency||'CNY';
-var info={id:g.id,title:g.name||'未知',description:'',url:'https://store.steampowered.com/app/'+g.id,image:g.header_image||g.small_capsule_image||''};
+var info={id:g.id,title:g.name||'未知',description:(g.short_description||'').substring(0,150),url:'https://store.steampowered.com/app/'+g.id,image:g.header_image||g.small_capsule_image||''};
 if(fp===0||g.is_free){
 info.originalPrice=c2u(op);info.discountPrice='免费';info.originalPriceCNY=c2c(op,cur);info.discountPriceCNY='';
 free.push(info);
