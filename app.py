@@ -1,13 +1,71 @@
 """
-Epic & Steam 优惠查看器 - 纯前端版
-浏览器直接请求API，服务器只提供网页
+Epic & Steam 优惠查看器 - 代理版
+服务器做API代理，解决CORS问题
 使用方法: python app.py
 """
 
-from flask import Flask
-import os
+from flask import Flask, Response, jsonify
+import requests as req
+import os, json
 
 app = Flask(__name__)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+}
+
+# CORS 代理列表（备用）
+PROXIES = [
+    "https://api.allorigins.win/raw?url=",
+    "https://corsproxy.io/?",
+]
+
+def proxy_fetch(url, timeout=25):
+    """先直接请求，失败则用CORS代理"""
+    # 方式1：直接请求
+    try:
+        r = req.get(url, headers=HEADERS, timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+    except:
+        pass
+    # 方式2：CORS代理
+    for proxy in PROXIES:
+        try:
+            r = req.get(proxy + url, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+        except:
+            continue
+    raise Exception("所有请求方式均失败")
+
+@app.after_request
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+@app.route("/")
+def index():
+    return HTML
+
+@app.route("/api/epic")
+def api_epic():
+    try:
+        url = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=zh-CN&country=US&allowCountries=US"
+        data = proxy_fetch(url)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+@app.route("/api/steam")
+def api_steam():
+    try:
+        url = "https://store.steampowered.com/api/featuredcategories?cc=cn&l=schinese"
+        data = proxy_fetch(url)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -61,7 +119,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans
 @keyframes sp{to{transform:rotate(360deg)}}
 .empty{grid-column:1/-1;text-align:center;padding:3rem;color:var(--t2)}
 .empty .icon{font-size:2.5rem;margin-bottom:.8rem}
-.err-msg{font-size:.8rem;margin-top:.5rem;word-break:break-all}
+.err-msg{font-size:.8rem;margin-top:.5rem;word-break:break-all;max-width:400px;margin-left:auto;margin-right:auto}
 @media(max-width:768px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -95,8 +153,8 @@ function err(el,msg){el.innerHTML='<div class="empty"><div class="icon">⚠️</
 
 function loadEpic(){
 ['ef','ed'].forEach(function(id){$(id).innerHTML='<div class="ld"><div class="spinner"></div><br>加载中...</div>'});
-var url='https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=zh-CN&country=US&allowCountries=US';
-fetch(url).then(function(r){return r.json()}).then(function(data){
+fetch('/api/epic').then(function(r){return r.json()}).then(function(data){
+if(data.error){err($('ef'),data.error);err($('ed'),data.error);return;}
 var els=data.data.Catalog.searchStore.elements;
 var free=[],disc=[];
 els.forEach(function(g){
@@ -123,8 +181,8 @@ show($('ef'),free,'free');show($('ed'),disc,'deal');
 
 function loadSteam(){
 ['sf','sd'].forEach(function(id){$(id).innerHTML='<div class="ld"><div class="spinner"></div><br>加载中...</div>'});
-var url='https://store.steampowered.com/api/featuredcategories?cc=cn&l=schinese';
-fetch(url).then(function(r){return r.json()}).then(function(data){
+fetch('/api/steam').then(function(r){return r.json()}).then(function(data){
+if(data.error){err($('sf'),data.error);err($('sd'),data.error);return;}
 var free=[],disc=[],seen={};
 for(var cat in data){var items=(data[cat]||{}).items||[];
 items.forEach(function(g){if(seen[g.id])return;seen[g.id]=1;
@@ -147,10 +205,6 @@ function loadAll(){loadEpic();loadSteam()}
 loadAll();
 </script>
 </body></html>"""
-
-@app.route("/")
-def index():
-    return HTML
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
